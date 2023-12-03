@@ -1,0 +1,3 @@
+[env]
+AWS_CONFIG_FILE= { value = ".aws/config", relative = true }
+AWS_SHARED_CREDENTIALS_FILE={ value = ".aws/credentials", relative = true }
