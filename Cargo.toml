@@ -15,3 +15,10 @@ serde_json = "1.0.85"
 tokio = { version = "1", features = ["macros"] }
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codgen-units = 1
+panic = "abort"
+strip = "debuginfo"

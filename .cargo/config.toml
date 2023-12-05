@@ -1,4 +1,6 @@
+[build]
+rustflags = ["-Ctarget-cpu=neoverse-n1", "-Ctarget-feature=+outline-atomics"]        # custom flags to pass to all compiler invocations
+
 [env]
-CARGO_LAMBDA_COMPILER = { value = "cargo" }
 AWS_CONFIG_FILE= { value = ".aws/config", relative = true }
 AWS_SHARED_CREDENTIALS_FILE={ value = ".aws/credentials", relative = true }
