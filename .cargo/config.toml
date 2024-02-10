@@ -4,3 +4,7 @@ rustflags = ["-Ctarget-cpu=neoverse-n1", "-Ctarget-feature=+outline-atomics"]   
 [env]
 AWS_CONFIG_FILE= { value = ".aws/config", relative = true }
 AWS_SHARED_CREDENTIALS_FILE={ value = ".aws/credentials", relative = true }
+
+[alias]
+# Build in Release, without Cross-Compiling and as ZIP File ready for AWS Lambda
+aws = "lambda build --compiler cargo --release --arm64 --output-format zip"
