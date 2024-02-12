@@ -1,8 +1,10 @@
 use aws_config::BehaviorVersion;
+use aws_sdk_ses::error::DisplayErrorContext;
 use aws_sdk_ses::types::{Body, Content, Destination, Message};
-use aws_sdk_ses::Client;
+use aws_sdk_ses::Client as SesClient;
 use lambda_runtime::{service_fn, Error, LambdaEvent};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use reqwest::Client as ReqClient;
 
 #[derive(Debug, Deserialize)]
 struct ContactFormDetails {
@@ -14,16 +16,51 @@ struct ContactFormDetails {
     captcha: String,
 }
 
+#[derive(Serialize)]
+struct RecaptchaRequest {
+    secret: String,
+    response: String,
+}
+
+#[derive(Deserialize)]
+struct RecaptchaResponse {
+    success: bool,
+}
+
+#[tracing::instrument(skip(secret, response), fields(response_id = %response))]
+async fn verify_recaptcha(secret: String, response: String) -> Result<bool, reqwest::Error> {
+    let client = ReqClient::new();
+    let req = RecaptchaRequest { secret, response };
+    let res: RecaptchaResponse = client.post("https://www.google.com/recaptcha/api/siteverify")
+        .json(&req)
+        .send()
+        .await?
+        .json()
+        .await?;
+    Ok(res.success)
+}
+
 #[tracing::instrument(skip(event, client), fields(req_id = %event.context.request_id))]
 async fn send_mail(
     event: LambdaEvent<ContactFormDetails>,
-    client: &Client,
+    client: &SesClient,
 ) -> Result<(), Error> {
     tracing::info!("handling a request");
 
     let content_form = event.payload;
     tracing::info!("Contact Form Data {:?}", content_form);
     let _ctx = event.context;
+
+    // Check Google Captcha Response
+    let captcha_secret = std::env::var("captchaSiteSecret").expect("captchaSiteSecret Environment Variable must be set!");
+    let captcha_response = verify_recaptcha(captcha_secret, content_form.captcha).await?;
+
+    if captcha_response {
+        tracing::info!("Google recaptcha Response Ok.");
+    } else {
+        tracing::error!("Google recaptcha Response Nok!");
+        return Ok(());
+    }
 
     // Create Mail Object and Send by SESv1
     let email_destination = Destination::builder()
@@ -58,7 +95,10 @@ async fn send_mail(
 
     match result {
         Ok(output) => tracing::info!("Mail send with Message_ID: {}", output.message_id),
-        Err(_) => tracing::error!("Error send Mail by SESv1 failed!"),
+        Err(error) => {
+            tracing::error!("Error send Mail by SESv1 failed!");
+            tracing::error!("{}", DisplayErrorContext(error));
+        },
     }
 
     Ok(())
