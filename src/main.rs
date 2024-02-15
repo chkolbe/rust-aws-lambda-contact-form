@@ -5,6 +5,7 @@ use aws_sdk_ses::Client as SesClient;
 use lambda_runtime::{service_fn, Error, LambdaEvent};
 use serde::{Deserialize, Serialize};
 use reqwest::Client as ReqClient;
+use minijinja::{context, Environment};
 
 #[derive(Debug, Deserialize)]
 struct ContactFormDetails {
@@ -59,8 +60,18 @@ async fn send_mail(
         tracing::info!("Google recaptcha Response Ok.");
     } else {
         tracing::error!("Google recaptcha Response Nok!");
-        return Ok(());
+        //return Ok(());
     }
+
+    // Create Mail Body in HTML
+    let mut env = Environment::new();
+    env.add_template("mail_body.txt", 
+        "<h1>{{name}}</h1>
+        <p>E Mail: {{email}}</p>
+        <p>Telefon: {{telephone}}</p>
+        <p>Detail:</p>
+        <p>{{detail}}</p>").unwrap();
+    let template = env.get_template("mail_body.txt").unwrap();
 
     // Create Mail Object and Send by SESv1
     let email_destination = Destination::builder()
@@ -72,13 +83,19 @@ async fn send_mail(
         .charset("UTF-8")
         .build().expect("building Subject");
 
+    let mail_body_html = template.render(context!(
+        name => content_form.name,
+        email => content_form.email,
+        telephone => content_form.telephone,
+        detail => content_form.detail)).unwrap();
+
     let detail = Content::builder()
-        .set_data(Some(content_form.detail))
+        .set_data(Some(mail_body_html))
         .charset("UTF-8")
         .build().expect("building Detail");
 
     let body = Body::builder()
-        .set_text(Some(detail))
+        .set_html(Some(detail))
         .build();
 
     let email_content = Message::builder()
