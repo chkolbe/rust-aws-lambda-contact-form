@@ -13,7 +13,6 @@ struct ContactFormDetails {
     email: String,
     telephone: String,
     detail: String,
-    #[serde(rename(deserialize = "g-recaptcha-response"))]
     captcha: String,
 }
 
@@ -74,8 +73,9 @@ async fn send_mail(
     let template = env.get_template("mail_body.txt").unwrap();
 
     // Create Mail Object and Send by SESv1
+    let email_address = std::env::var("forwardAddress").expect("forwardAddress Environment Variable must be set!");
     let email_destination = Destination::builder()
-        .set_to_addresses(Some(vec!["kontakt@christopherkolbe.de".to_owned()]))
+        .set_to_addresses(Some(vec![email_address]))
         .build();
 
     let subject = Content::builder()
@@ -103,9 +103,10 @@ async fn send_mail(
         .set_body(Some(body))
         .build();
 
+    let email_source = std::env::var("sourceAddress").expect("sourceAddress Environment Variable must be set!");
     let result = &client
         .send_email()
-        .set_source(Some("info@christopherkolbe.de".to_owned()))
+        .set_source(Some(email_source))
         .set_destination(Some(email_destination))
         .set_message(Some(email_content))
         .send().await;
