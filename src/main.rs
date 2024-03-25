@@ -3,9 +3,9 @@ use aws_sdk_ses::error::DisplayErrorContext;
 use aws_sdk_ses::types::{Body, Content, Destination, Message};
 use aws_sdk_ses::Client as SesClient;
 use lambda_runtime::{service_fn, Error, LambdaEvent};
-use serde::{Deserialize, Serialize};
-use reqwest::Client as ReqClient;
+use serde::Deserialize;
 use minijinja::{context, Environment};
+use recaptcha_verify::{RecaptchaError, verify};
 
 #[derive(Debug, Deserialize)]
 struct ContactFormDetails {
@@ -13,40 +13,15 @@ struct ContactFormDetails {
     email: String,
     telephone: String,
     detail: String,
-    #[serde(rename(deserialize = "g-recaptcha-response"))]
     captcha: String,
 }
 
-#[derive(Serialize)]
-struct RecaptchaRequest {
-    secret: String,
-    response: String,
-}
-
-#[derive(Deserialize)]
-struct RecaptchaResponse {
-    success: bool,
-}
-
-#[tracing::instrument(skip(secret, response), fields(response_id = %response))]
-async fn verify_recaptcha(secret: String, response: String) -> Result<bool, reqwest::Error> {
-    let client = ReqClient::new();
-    let req = RecaptchaRequest { secret, response };
-    let res: RecaptchaResponse = client.post("https://www.google.com/recaptcha/api/siteverify")
-        .json(&req)
-        .send()
-        .await?
-        .json()
-        .await?;
-    Ok(res.success)
-}
-
-#[tracing::instrument(skip(event, client), fields(req_id = %event.context.request_id))]
+#[tracing::instrument(parent = None, skip(event, client), fields(req_id = %event.context.request_id))]
 async fn send_mail(
     event: LambdaEvent<ContactFormDetails>,
     client: &SesClient,
 ) -> Result<(), Error> {
-    tracing::info!("handling a request");
+    tracing::trace!("handling a request");
 
     let content_form = event.payload;
     tracing::info!("Contact Form Data {:?}", content_form);
@@ -54,13 +29,14 @@ async fn send_mail(
 
     // Check Google Captcha Response
     let captcha_secret = std::env::var("captchaSiteSecret").expect("captchaSiteSecret Environment Variable must be set!");
-    let captcha_response = verify_recaptcha(captcha_secret, content_form.captcha).await?;
+    let res:Result<(), RecaptchaError> = verify(&captcha_secret, &content_form.captcha, None).await;
+    let captcha_response = res.is_ok();
 
     if captcha_response {
         tracing::info!("Google recaptcha Response Ok.");
     } else {
         tracing::error!("Google recaptcha Response Nok!");
-        //return Ok(());
+        return Ok(());
     }
 
     // Create Mail Body in HTML
@@ -74,12 +50,13 @@ async fn send_mail(
     let template = env.get_template("mail_body.txt").unwrap();
 
     // Create Mail Object and Send by SESv1
+    let email_address = std::env::var("forwardAddress").expect("forwardAddress Environment Variable must be set!");
     let email_destination = Destination::builder()
-        .set_to_addresses(Some(vec!["kontakt@christopherkolbe.de".to_owned()]))
+        .set_to_addresses(Some(vec![email_address]))
         .build();
 
     let subject = Content::builder()
-        .set_data(Some("[christopherkolbe.de] Kontakt".to_owned()))
+        .set_data(Some("[csdbamberg.de] Kontakt".to_owned()))
         .charset("UTF-8")
         .build().expect("building Subject");
 
@@ -103,9 +80,10 @@ async fn send_mail(
         .set_body(Some(body))
         .build();
 
+    let email_source = std::env::var("sourceAddress").expect("sourceAddress Environment Variable must be set!");
     let result = &client
         .send_email()
-        .set_source(Some("info@christopherkolbe.de".to_owned()))
+        .set_source(Some(email_source))
         .set_destination(Some(email_destination))
         .set_message(Some(email_content))
         .send().await;
@@ -126,10 +104,10 @@ async fn send_mail(
 async fn main() -> Result<(), Error> {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
-        // disable printing the name of the module in every log line.
-        .with_target(false)
         // disabling time is handy because CloudWatch will add the ingestion time.
         .without_time()
+        // remove the name of the function from every log entry
+        .with_target(false)
         .init();
 
     // Initialize the client here to be able to reuse it across
