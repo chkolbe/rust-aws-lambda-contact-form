@@ -16,12 +16,12 @@ struct ContactFormDetails {
     captcha: String,
 }
 
-#[tracing::instrument(skip(event, client), fields(req_id = %event.context.request_id))]
+#[tracing::instrument(parent = None, skip(event, client), fields(req_id = %event.context.request_id))]
 async fn send_mail(
     event: LambdaEvent<ContactFormDetails>,
     client: &SesClient,
 ) -> Result<(), Error> {
-    tracing::info!("handling a request");
+    tracing::trace!("handling a request");
 
     let content_form = event.payload;
     tracing::info!("Contact Form Data {:?}", content_form);
