@@ -4,7 +4,8 @@ use aws_sdk_ses::types::{Body, Content, Destination, Message};
 use aws_sdk_ses::Client as SesClient;
 use lambda_runtime::{service_fn, Error, LambdaEvent};
 use serde::{Deserialize, Serialize};
-use reqwest::Client as ReqClient;
+use reqwest::{header, Client as ReqClient};
+use reqwest::header::{HeaderMap, CONTENT_TYPE};
 use minijinja::{context, Environment};
 
 #[derive(Debug, Deserialize)]
@@ -16,27 +17,38 @@ struct ContactFormDetails {
     captcha: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 struct RecaptchaRequest {
     secret: String,
     response: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct RecaptchaResponse {
     success: bool,
+    #[serde(rename(deserialize = "error-codes"))]
+    error_codes: Vec<String>,
+    //challenge_ts: DateTime,  // timestamp of the challenge load (ISO format yyyy-MM-dd'T'HH:mm:ssZZ)
+    //hostname: String,         // the hostname of the site where the reCAPTCHA was solved
 }
 
-#[tracing::instrument(skip(secret, response), fields(response_id = %response))]
+#[tracing::instrument(skip_all)]
 async fn verify_recaptcha(secret: String, response: String) -> Result<bool, reqwest::Error> {
     let client = ReqClient::new();
+
+    let mut headers = HeaderMap::new();
+    headers.append(CONTENT_TYPE, "application/json".parse().unwrap());
+
     let req = RecaptchaRequest { secret, response };
+
     let res: RecaptchaResponse = client.post("https://www.google.com/recaptcha/api/siteverify")
+        .headers(headers)
         .json(&req)
         .send()
         .await?
         .json()
         .await?;
+    tracing::info!("Google ReCAPTCHA Response {:?}", res);
     Ok(res.success)
 }
 
@@ -79,7 +91,7 @@ async fn send_mail(
         .build();
 
     let subject = Content::builder()
-        .set_data(Some("[christopherkolbe.de] Kontakt".to_owned()))
+        .set_data(Some("[csdbamberg.de] Kontakt".to_owned()))
         .charset("UTF-8")
         .build().expect("building Subject");
 
@@ -127,10 +139,10 @@ async fn send_mail(
 async fn main() -> Result<(), Error> {
     tracing_subscriber::fmt()
         .with_max_level(tracing::Level::INFO)
-        // disable printing the name of the module in every log line.
-        .with_target(false)
         // disabling time is handy because CloudWatch will add the ingestion time.
         .without_time()
+        // remove the name of the function from every log entry
+        .with_target(false)
         .init();
 
     // Initialize the client here to be able to reuse it across
