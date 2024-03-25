@@ -1,21 +1,11 @@
 use aws_config::BehaviorVersion;
 use aws_sdk_ses::error::DisplayErrorContext;
 use aws_sdk_ses::types::{Body, Content, Destination, Message};
-use aws_sdk_ses::Client as SesClient;
-use lambda_runtime::{service_fn, Error, LambdaEvent};
+use lambda_http::http::StatusCode;
+use lambda_http::{service_fn, Error, IntoResponse, Request, RequestExt, Response};
 use serde::{Deserialize, Serialize};
 use reqwest::Client as ReqClient;
 use minijinja::{context, Environment};
-
-#[derive(Debug, Deserialize)]
-struct ContactFormDetails {
-    name: String,
-    email: String,
-    telephone: String,
-    detail: String,
-    #[serde(rename(deserialize = "g-recaptcha-response"))]
-    captcha: String,
-}
 
 #[derive(Serialize)]
 struct RecaptchaRequest {
@@ -41,20 +31,37 @@ async fn verify_recaptcha(secret: String, response: String) -> Result<bool, reqw
     Ok(res.success)
 }
 
-#[tracing::instrument(skip(event, client), fields(req_id = %event.context.request_id))]
-async fn send_mail(
-    event: LambdaEvent<ContactFormDetails>,
-    client: &SesClient,
-) -> Result<(), Error> {
+#[tracing::instrument(skip(request), fields(req_id = %request.lambda_context().request_id))]
+async fn send_mail(request: Request) -> Result<impl IntoResponse, Error> {
     tracing::info!("handling a request");
 
-    let content_form = event.payload;
-    tracing::info!("Contact Form Data {:?}", content_form);
-    let _ctx = event.context;
+    // Initialize the client here to be able to reuse it across
+    // different invocations.
+    //
+    // No extra configuration is needed as long as your Lambda has
+    // the necessary permissions attached to its role.
+    let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
+    let client = aws_sdk_ses::Client::new(&config);
+
+    tracing::info!("Region: {}", config.region().unwrap());
+
+    //let content_form = event.payload;
+    let query_params = request.query_string_parameters_ref();
+    if query_params.is_none() {
+        tracing::error!("No Query Params in the API request!");
+        //return Ok(());
+    } else {
+        tracing::info!("Contact Form Data {:?}", query_params);
+    }
+
+    let query_params = request.query_string_parameters_ref().unwrap();
+
+    // SAFETY Unwrap will never fail. Missing Variable is checked by expect.
+    let captcha = query_params.all("captcha").expect("Query Param: Captcha missing!").first().unwrap().to_string();
 
     // Check Google Captcha Response
     let captcha_secret = std::env::var("captchaSiteSecret").expect("captchaSiteSecret Environment Variable must be set!");
-    let captcha_response = verify_recaptcha(captcha_secret, content_form.captcha).await?;
+    let captcha_response = verify_recaptcha(captcha_secret, captcha).await?;
 
     if captcha_response {
         tracing::info!("Google recaptcha Response Ok.");
@@ -74,8 +81,9 @@ async fn send_mail(
     let template = env.get_template("mail_body.txt").unwrap();
 
     // Create Mail Object and Send by SESv1
+    let email_address = std::env::var("forwardAddress").expect("forwardAddress Environment Variable must be set!");
     let email_destination = Destination::builder()
-        .set_to_addresses(Some(vec!["kontakt@christopherkolbe.de".to_owned()]))
+        .set_to_addresses(Some(vec![email_address]))
         .build();
 
     let subject = Content::builder()
@@ -83,11 +91,18 @@ async fn send_mail(
         .charset("UTF-8")
         .build().expect("building Subject");
 
+    // SAFETY Unwrap will never fail. Missing Variable is checked by expect.
+    let name = query_params.all("name").expect("Query Param: Name missing!").first().unwrap().to_string();
+    let email = query_params.all("email").expect("Query Param: Email missing!").first().unwrap().to_string();
+    //let email = query_params.all("email").or_else(|| Some(vec!["Empty"])).unwrap().first().unwrap().to_string();
+    let telephone = query_params.all("telephone").expect("Query Param: Telephone missing!").first().unwrap().to_string();
+    let detail = query_params.all("detail").expect("Query Param: Detail missing!").first().unwrap().to_string();
+
     let mail_body_html = template.render(context!(
-        name => content_form.name,
-        email => content_form.email,
-        telephone => content_form.telephone,
-        detail => content_form.detail)).unwrap();
+        name => name,
+        email => email,
+        telephone => telephone,
+        detail => detail)).unwrap();
 
     let detail = Content::builder()
         .set_data(Some(mail_body_html))
@@ -103,9 +118,10 @@ async fn send_mail(
         .set_body(Some(body))
         .build();
 
+    let email_source = std::env::var("sourceAddress").expect("sourceAddress Environment Variable must be set!");
     let result = &client
         .send_email()
-        .set_source(Some("info@christopherkolbe.de".to_owned()))
+        .set_source(Some(email_source))
         .set_destination(Some(email_destination))
         .set_message(Some(email_content))
         .send().await;
@@ -118,7 +134,13 @@ async fn send_mail(
         },
     }
 
-    Ok(())
+    let _response = Response::builder().body(lambda_http::Body::Empty).unwrap();
+    let response = Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header("Location", "/index.html")
+        .body(lambda_http::Body::Empty).unwrap();
+
+    Ok(response)
 
 }
 
@@ -132,18 +154,7 @@ async fn main() -> Result<(), Error> {
         .without_time()
         .init();
 
-    // Initialize the client here to be able to reuse it across
-    // different invocations.
-    //
-    // No extra configuration is needed as long as your Lambda has
-    // the necessary permissions attached to its role.
-    let config = aws_config::load_defaults(BehaviorVersion::latest()).await;
-    let client = aws_sdk_ses::Client::new(&config);
+    lambda_http::run(service_fn(send_mail)).await?;
 
-    tracing::info!("Region: {}", config.region().unwrap());
-
-    lambda_runtime::run(service_fn( |event: LambdaEvent<ContactFormDetails>| async {
-        send_mail(event, &client).await
-    }))
-    .await
+    Ok(())
 }
