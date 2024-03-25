@@ -3,10 +3,9 @@ use aws_sdk_ses::error::DisplayErrorContext;
 use aws_sdk_ses::types::{Body, Content, Destination, Message};
 use aws_sdk_ses::Client as SesClient;
 use lambda_runtime::{service_fn, Error, LambdaEvent};
-use serde::{Deserialize, Serialize};
-use reqwest::{header, Client as ReqClient};
-use reqwest::header::{HeaderMap, CONTENT_TYPE};
+use serde::Deserialize;
 use minijinja::{context, Environment};
+use recaptcha_verify::{RecaptchaError, verify};
 
 #[derive(Debug, Deserialize)]
 struct ContactFormDetails {
@@ -15,41 +14,6 @@ struct ContactFormDetails {
     telephone: String,
     detail: String,
     captcha: String,
-}
-
-#[derive(Debug, Serialize)]
-struct RecaptchaRequest {
-    secret: String,
-    response: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct RecaptchaResponse {
-    success: bool,
-    #[serde(rename(deserialize = "error-codes"))]
-    error_codes: Vec<String>,
-    //challenge_ts: DateTime,  // timestamp of the challenge load (ISO format yyyy-MM-dd'T'HH:mm:ssZZ)
-    //hostname: String,         // the hostname of the site where the reCAPTCHA was solved
-}
-
-#[tracing::instrument(skip_all)]
-async fn verify_recaptcha(secret: String, response: String) -> Result<bool, reqwest::Error> {
-    let client = ReqClient::new();
-
-    let mut headers = HeaderMap::new();
-    headers.append(CONTENT_TYPE, "application/json".parse().unwrap());
-
-    let req = RecaptchaRequest { secret, response };
-
-    let res: RecaptchaResponse = client.post("https://www.google.com/recaptcha/api/siteverify")
-        .headers(headers)
-        .json(&req)
-        .send()
-        .await?
-        .json()
-        .await?;
-    tracing::info!("Google ReCAPTCHA Response {:?}", res);
-    Ok(res.success)
 }
 
 #[tracing::instrument(skip(event, client), fields(req_id = %event.context.request_id))]
@@ -65,13 +29,14 @@ async fn send_mail(
 
     // Check Google Captcha Response
     let captcha_secret = std::env::var("captchaSiteSecret").expect("captchaSiteSecret Environment Variable must be set!");
-    let captcha_response = verify_recaptcha(captcha_secret, content_form.captcha).await?;
+    let res:Result<(), RecaptchaError> = verify(&captcha_secret, &content_form.captcha, None).await;
+    let captcha_response = res.is_ok();
 
     if captcha_response {
         tracing::info!("Google recaptcha Response Ok.");
     } else {
         tracing::error!("Google recaptcha Response Nok!");
-        //return Ok(());
+        return Ok(());
     }
 
     // Create Mail Body in HTML
